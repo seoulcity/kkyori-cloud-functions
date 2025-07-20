@@ -1,0 +1,185 @@
+name: Test All Functions
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run daily at 9 AM UTC
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Go Functions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.23.0"
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install dependencies
+        run: |
+          echo "Installing dependencies for all functions..."
+          for func_dir in functions/*/; do
+            if [ -f "$func_dir/go.mod" ]; then
+              echo "Installing dependencies in $func_dir"
+              cd "$func_dir"
+              go mod download
+              go mod verify
+              cd - > /dev/null
+            fi
+          done
+
+      - name: Run Go tests
+        run: |
+          echo "Running tests for all Go functions..."
+          test_failed=false
+
+          for func_dir in functions/*/; do
+            if [ -f "$func_dir/go.mod" ]; then
+              func_name=$(basename "$func_dir")
+              echo "🧪 Testing $func_name..."
+              cd "$func_dir"
+              
+              if go test -v ./...; then
+                echo "✅ $func_name tests passed"
+              else
+                echo "❌ $func_name tests failed"
+                test_failed=true
+              fi
+              
+              cd - > /dev/null
+            fi
+          done
+
+          if [ "$test_failed" = true ]; then
+            echo "❌ Some tests failed"
+            exit 1
+          else
+            echo "✅ All tests passed"
+          fi
+
+      - name: Run Go vet
+        run: |
+          echo "Running go vet for all functions..."
+          for func_dir in functions/*/; do
+            if [ -f "$func_dir/go.mod" ]; then
+              func_name=$(basename "$func_dir")
+              echo "🔍 Vetting $func_name..."
+              cd "$func_dir"
+              go vet ./...
+              cd - > /dev/null
+            fi
+          done
+
+      - name: Run gofmt check
+        run: |
+          echo "Checking code formatting..."
+          for func_dir in functions/*/; do
+            if [ -f "$func_dir/go.mod" ]; then
+              func_name=$(basename "$func_dir")
+              echo "📝 Checking format for $func_name..."
+              cd "$func_dir"
+              
+              unformatted=$(gofmt -l .)
+              if [ -n "$unformatted" ]; then
+                echo "❌ Unformatted files in $func_name:"
+                echo "$unformatted"
+                exit 1
+              else
+                echo "✅ $func_name code is properly formatted"
+              fi
+              
+              cd - > /dev/null
+            fi
+          done
+
+      - name: Check go mod tidy
+        run: |
+          echo "Checking if go.mod files are tidy..."
+          for func_dir in functions/*/; do
+            if [ -f "$func_dir/go.mod" ]; then
+              func_name=$(basename "$func_dir")
+              echo "🧹 Checking tidy for $func_name..."
+              cd "$func_dir"
+              
+              cp go.mod go.mod.bak
+              cp go.sum go.sum.bak
+              go mod tidy
+              
+              if ! diff go.mod go.mod.bak > /dev/null || ! diff go.sum go.sum.bak > /dev/null; then
+                echo "❌ $func_name go.mod is not tidy"
+                exit 1
+              else
+                echo "✅ $func_name go.mod is tidy"
+              fi
+              
+              cd - > /dev/null
+            fi
+          done
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test deployed functions
+        run: |
+          echo "🔗 Testing deployed functions..."
+
+          # Test HealthCheck function
+          echo "Testing HealthCheck function..."
+          HEALTHCHECK_URL="https://healthcheck-go-444846167409.asia-northeast3.run.app"
+
+          if response=$(curl -s "$HEALTHCHECK_URL" | jq -r '.status' 2>/dev/null); then
+            if [ "$response" = "healthy" ]; then
+              echo "✅ HealthCheck function is responding correctly"
+            else
+              echo "⚠️ HealthCheck function responded but status is: $response"
+            fi
+          else
+            echo "❌ HealthCheck function is not responding"
+          fi
+
+          # Test Whisper function (just check if it's reachable)
+          echo "Testing Whisper function reachability..."
+          WHISPER_URL="https://whisper-transcribe-go-444846167409.asia-northeast3.run.app"
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$WHISPER_URL" || echo "000")
+          if [ "$HTTP_CODE" -eq "405" ]; then
+            echo "✅ Whisper function is deployed and reachable (returns 405 for GET as expected)"
+          else
+            echo "⚠️ Whisper function returned HTTP $HTTP_CODE"
+          fi
+
+      - name: Generate test report
+        if: always()
+        run: |
+          echo "📊 Test Summary"
+          echo "=============="
+          echo "Date: $(date)"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Triggered by: ${{ github.event_name }}"

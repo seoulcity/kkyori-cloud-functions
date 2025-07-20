@@ -1,0 +1,94 @@
+name: Deploy Whisper Function
+
+on:
+  push:
+    paths:
+      - "functions/whisper-go/**"
+      - "functions/shared/**"
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy:
+    name: Deploy Whisper Function
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.23.0"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CLOUD_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Google Cloud Project
+        run: |
+          gcloud config set project ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          gcloud config set compute/region ${{ secrets.GOOGLE_CLOUD_REGION }}
+
+      - name: Verify dependencies
+        run: |
+          cd functions/whisper-go
+          go mod verify
+          go mod tidy
+
+      - name: Run tests
+        run: |
+          cd functions/whisper-go
+          go test -v ./...
+
+      - name: Deploy Whisper Function
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_REGION: ${{ secrets.GOOGLE_CLOUD_REGION }}
+        run: |
+          cd functions/whisper-go
+          chmod +x deploy.sh
+          ./deploy.sh
+
+      - name: Verify deployment
+        run: |
+          FUNCTION_URL="https://whisper-transcribe-go-${{ secrets.GOOGLE_CLOUD_PROJECT }}-${{ secrets.GOOGLE_CLOUD_REGION }}.run.app"
+          echo "Testing function at: $FUNCTION_URL"
+
+          # Basic health check (should return error for GET request, but confirms deployment)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FUNCTION_URL" || echo "000")
+          echo "Function response code: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -eq "405" ] || [ "$HTTP_CODE" -eq "200" ]; then
+            echo "✅ Function deployed successfully"
+          else
+            echo "❌ Function deployment verification failed"
+            exit 1
+          fi
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "🚀 Whisper Function deployed successfully to ${{ github.event.inputs.environment || 'production' }}"
+          else
+            echo "❌ Whisper Function deployment failed"
+          fi

@@ -1,0 +1,93 @@
+name: Deploy HealthCheck Function
+
+on:
+  push:
+    paths:
+      - "functions/healthcheck-go/**"
+      - "functions/shared/**"
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy:
+    name: Deploy HealthCheck Function
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.23.0"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CLOUD_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Google Cloud Project
+        run: |
+          gcloud config set project ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          gcloud config set compute/region ${{ secrets.GOOGLE_CLOUD_REGION }}
+
+      - name: Verify dependencies
+        run: |
+          cd functions/healthcheck-go
+          go mod verify
+          go mod tidy
+
+      - name: Run tests
+        run: |
+          cd functions/healthcheck-go
+          go test -v ./...
+
+      - name: Deploy HealthCheck Function
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_REGION: ${{ secrets.GOOGLE_CLOUD_REGION }}
+        run: |
+          cd functions/healthcheck-go
+          chmod +x deploy.sh
+          ./deploy.sh
+
+      - name: Verify deployment
+        run: |
+          FUNCTION_URL="https://healthcheck-go-${{ secrets.GOOGLE_CLOUD_PROJECT }}-${{ secrets.GOOGLE_CLOUD_REGION }}.run.app"
+          echo "Testing function at: $FUNCTION_URL"
+
+          # Test health check endpoint
+          RESPONSE=$(curl -s "$FUNCTION_URL" | jq -r '.status' 2>/dev/null || echo "failed")
+          echo "Health check response: $RESPONSE"
+
+          if [ "$RESPONSE" = "healthy" ]; then
+            echo "✅ HealthCheck Function deployed and responding correctly"
+          else
+            echo "❌ HealthCheck Function deployment verification failed"
+            exit 1
+          fi
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "🚀 HealthCheck Function deployed successfully to ${{ github.event.inputs.environment || 'production' }}"
+          else
+            echo "❌ HealthCheck Function deployment failed"
+          fi
