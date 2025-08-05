@@ -91,10 +91,10 @@ func TranscribeAudio(w http.ResponseWriter, r *http.Request) {
 
 	// Create transcription request with basic parameters first
 	transcriptionResp, err := client.Audio.Transcriptions.New(context.Background(), openai.AudioTranscriptionNewParams{
-		File:           openai.File(bytes.NewReader(body), "audio.m4a", "audio/mp4"),
-		Model:          openai.AudioModelWhisper1, // Use whisper-1 as it supports more features
-		Language:       openai.String("en"),
-		ResponseFormat: openai.AudioResponseFormatVerboseJSON,
+		File:                   openai.File(bytes.NewReader(body), "audio.m4a", "audio/mp4"),
+		Model:                  openai.AudioModelWhisper1, // Use whisper-1 as it supports more features
+		Language:               openai.String("en"),
+		ResponseFormat:         openai.AudioResponseFormatVerboseJSON,
 		TimestampGranularities: []string{"word", "segment"},
 	})
 
@@ -139,4 +139,4 @@ func sendErrorResponse(w http.ResponseWriter, error, details string, statusCode 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(response)
-} 
+}
